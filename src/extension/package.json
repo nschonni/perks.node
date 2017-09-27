@@ -45,7 +45,7 @@
     "@microsoft.azure/polyfill": "^1.0.17",
     "hosted-git-info": "^2.4.2",
     "memorystream": "~0.3.1",
-    "npm": "^5.0.3",
+    "npm": "5.4.1",
     "npm-package-arg": "^5.1.2",
     "semver": "^5.3.0"
   }
