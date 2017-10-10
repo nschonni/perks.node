@@ -95,9 +95,10 @@ export class ExtensionFolderLocked extends Exception {
 }
 
 
-function cmdlineToArray(text: string, result: Array<string> = [], matcher = /[^\s']+|'([^']*)'/gi, count = 0): Array<string> {
+function cmdlineToArray(text: string, result: Array<string> = [], matcher = /[^\s"]+|"([^"]*)"/gi, count = 0): Array<string> {
+  text = text.replace(/\\"/g, "\ufffe");
   const match = matcher.exec(text);
-  return match ? cmdlineToArray(text, result, matcher, result.push(match[1] ? match[1] : match[0])) : result;
+  return match ? cmdlineToArray(text, result, matcher, result.push(match[1] ? match[1].replace(/\ufffe/g, '"', ) : match[0].replace(/\ufffe/g, '"', ))) : result;
 }
 
 function getPathVariableName() {
@@ -514,7 +515,6 @@ export class ExtensionManager {
       } else {
         throw new Exception("I has a sad.");
       }
-
     }
   }
 
@@ -535,11 +535,11 @@ export class ExtensionManager {
     env[getPathVariableName()] = `${path.join(extension.location, "node_modules", ".bin")}${path.delimiter}${env[getPathVariableName()]}`;
 
     if (command[0] == 'node') {
-      // nodejs or electron. Use child_process.fork()
-      return childProcess.fork(command[1], command.slice(2), { env: env, cwd: extension.modulePath, silent: true })
+      // nodejs or electron. 
+      return childProcess.spawn(process.execPath, command.slice(1), { env: env, cwd: extension.modulePath })
     }
     // spawn the command 
-    return childProcess.exec(extension.definition.scripts.start, { env: env, cwd: extension.modulePath, maxBuffer: 64 * 1024 * 1024 });
+    return childProcess.spawn(command[0], command.slice(1), { env: env, cwd: extension.modulePath });
   }
 }
 
