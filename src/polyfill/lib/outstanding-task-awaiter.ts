@@ -25,7 +25,10 @@ export class OutstandingTaskAwaiter {
     if (this.locked) {
       throw new OutstandingTaskAlreadyCompletedException();
     }
-    this.outstandingTasks.push(task.catch((e) => this.errors.push(e)));
+    this.outstandingTasks.push(task.catch((e) => {
+      console.error("Yes. errors in the await.")
+      this.errors.push(e)
+    }));
 
     return task;
   }

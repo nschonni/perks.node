@@ -8,22 +8,22 @@ require('npm/lib/utils/output');
 require.cache[require.resolve('npm/lib/utils/output')].exports = () => { };
 
 import { config, load, commands } from 'npm'
-import * as hgi from 'hosted-git-info'
-import * as childProcess from 'child_process'
-import * as asyncIO from '@microsoft.azure/async-io'
-import { Exception, shallowCopy } from '@microsoft.azure/polyfill'
-import * as npa from 'npm-package-arg'
-import * as u from 'util';
-import * as os from 'os';
+import { spawn, ChildProcess } from 'child_process'
+import { readdir, isFile, readFile, exists, isDirectory, mkdir, Lock, rmdir, release } from '@microsoft.azure/async-io'
+import { Exception, shallowCopy, CriticalSection } from '@microsoft.azure/polyfill'
+import { resolve as npmResolvePackage } from 'npm-package-arg'
+import { homedir } from 'os';
 import * as semver from 'semver';
 import { Progress, Subscribe } from '@microsoft.azure/eventing'
 
 import * as path from 'path';
 import * as fetch from "npm/lib/fetch-package-metadata";
-import * as npmlog from 'npm/node_modules/npmlog'
+const npmlog = require('npm/node_modules/npmlog')
 
 const npmview = require('npm/lib/view')
 const MemoryStream = require('memorystream')
+
+const nodePath = quoteIfNecessary(process.execPath);
 
 type Config = typeof config;
 
@@ -52,6 +52,13 @@ const npm_config = new Promise<Config>((r, j) => {
     r(c);
   });
 });
+
+function quoteIfNecessary(text: string): string {
+  if (text && text.indexOf(' ') > -1 && text.charAt(0) != '"') {
+    return `"${text}"`;
+  }
+  return text;
+}
 
 export class UnresolvedPackageException extends Exception {
   constructor(packageId: string) {
@@ -98,7 +105,7 @@ export class ExtensionFolderLocked extends Exception {
 function cmdlineToArray(text: string, result: Array<string> = [], matcher = /[^\s"]+|"([^"]*)"/gi, count = 0): Array<string> {
   text = text.replace(/\\"/g, "\ufffe");
   const match = matcher.exec(text);
-  return match ? cmdlineToArray(text, result, matcher, result.push(match[1] ? match[1].replace(/\ufffe/g, '"', ) : match[0].replace(/\ufffe/g, '"', ))) : result;
+  return match ? cmdlineToArray(text, result, matcher, result.push(match[1] ? match[1].replace(/\ufffe/g, '\\"', ) : match[0].replace(/\ufffe/g, '\\"', ))) : result;
 }
 
 function getPathVariableName() {
@@ -187,11 +194,11 @@ export class Extension extends Package {
  */
   public get configurationPath(): Promise<string> {
     return (async () => {
-      var items = await asyncIO.readdir(this.modulePath);
+      var items = await readdir(this.modulePath);
       for (const each of items) {
         if (/^readme.md$/i.exec(each)) {
           const fullPath = path.normalize(`${this.modulePath}/${each}`);
-          if (await asyncIO.isFile(fullPath)) {
+          if (await isFile(fullPath)) {
             return fullPath;
           }
         }
@@ -209,7 +216,7 @@ export class Extension extends Package {
     return (async () => {
       const cfgPath = await this.configurationPath;
       if (cfgPath) {
-        return await asyncIO.readFile(cfgPath);
+        return await readFile(cfgPath);
       }
       return '';
     })();
@@ -219,7 +226,7 @@ export class Extension extends Package {
     return this.extensionManager.removeExtension(this);
   }
 
-  async start(): Promise<childProcess.ChildProcess> {
+  async start(): Promise<ChildProcess> {
     return this.extensionManager.start(this);
   }
 }
@@ -278,7 +285,7 @@ function fetchPackageMetadata(spec: string, where: string, opts: any): Promise<a
 
 function resolveName(name: string, version: string) {
   try {
-    return npa.resolve(name, version);
+    return npmResolvePackage(name, version);
   } catch (e) {
     if (e instanceof Error) {
       throw new InvalidPackageIdentityException(name, version, e.message);
@@ -290,17 +297,17 @@ function resolveName(name: string, version: string) {
 export class ExtensionManager {
   private static instances: Array<ExtensionManager> = [];
 
-  public dotnetPath = path.normalize(`${os.homedir()}/.dotnet`);
+  public dotnetPath = path.normalize(`${homedir()}/.dotnet`);
 
   public static async Create(installationPath: string): Promise<ExtensionManager> {
-    if (!await asyncIO.exists(installationPath)) {
-      await asyncIO.mkdir(installationPath);
+    if (!await exists(installationPath)) {
+      await mkdir(installationPath);
     }
-    if (!await asyncIO.isDirectory(installationPath)) {
+    if (!await isDirectory(installationPath)) {
       throw new Exception(`Extension folder '${installationPath}' is not a valid directory`);
     }
 
-    return new ExtensionManager(installationPath, await asyncIO.Lock.read(installationPath));
+    return new ExtensionManager(installationPath, await Lock.read(installationPath));
   }
   /*@internal*/ public static async disposeAll() {
     for (const each of this.instances) {
@@ -319,20 +326,20 @@ export class ExtensionManager {
     await this.readLockRelease();
 
     // check if we can even get a lock
-    if (await asyncIO.Lock.check(this.installationPath)) {
+    if (await Lock.check(this.installationPath)) {
       // it's locked. can't reset.
       throw new ExtensionFolderLocked(this.installationPath);
     }
 
     try {
       // get the exclusive lock
-      const release = await asyncIO.Lock.exclusive(this.installationPath);
+      const release = await Lock.exclusive(this.installationPath);
 
       // nuke the folder 
-      await asyncIO.rmdir(this.installationPath);
+      await rmdir(this.installationPath);
 
       // recreate the folder
-      await asyncIO.mkdir(this.installationPath);
+      await mkdir(this.installationPath);
 
       // drop the lock
       release();
@@ -340,7 +347,7 @@ export class ExtensionManager {
       throw (e);
     } finally {
       // add a read lock
-      this.readLockRelease = await asyncIO.Lock.read(this.installationPath)
+      this.readLockRelease = await Lock.read(this.installationPath)
     }
 
   }
@@ -388,9 +395,9 @@ export class ExtensionManager {
 
     // iterate thru the folders. 
     // the folder name should have the pattern @ORG#NAME@VER or NAME@VER 
-    for (const folder of await asyncIO.readdir(this.installationPath)) {
+    for (const folder of await readdir(this.installationPath)) {
       const fullpath = path.join(this.installationPath, folder);
-      if (await asyncIO.isDirectory(fullpath)) {
+      if (await isDirectory(fullpath)) {
 
         const split = /((@.+)_)?(.+)@(.+)/.exec(folder);
         if (split) {
@@ -419,14 +426,18 @@ export class ExtensionManager {
     return results;
   }
 
+  public static criticalSection = new CriticalSection();
+
   public async installPackage(pkg: Package, force?: boolean, maxWait: number = 5 * 60 * 1000, progressInit: Subscribe = () => { }): Promise<Extension> {
     const progress = new Progress(progressInit);
+
+    await ExtensionManager.criticalSection.enter();
 
     const cc = <any>await npm_config;
     const extension = new Extension(pkg, this.installationPath);
 
-    if (!asyncIO.exists(this.installationPath)) {
-      await asyncIO.mkdir(this.installationPath);
+    if (!exists(this.installationPath)) {
+      await mkdir(this.installationPath);
     }
 
     // change directory
@@ -436,8 +447,9 @@ export class ExtensionManager {
     progress.Start.Dispatch(null);
 
     progress.Progress.Dispatch(25);
+
     progress.Message.Dispatch("[FYI- npm does not currently support progress... this may take a few moments]");
-    let release: asyncIO.release | null = null;
+    let release: release | null = null;
 
     try {
       // set the prefix to the target location
@@ -446,8 +458,8 @@ export class ExtensionManager {
       cc.prefix = extension.location;
       cc.force = force;
 
-      if (await asyncIO.isDirectory(extension.location)) {
-        release = await asyncIO.Lock.waitForExclusive(extension.location);
+      if (await isDirectory(extension.location)) {
+        release = await Lock.waitForExclusive(extension.location);
 
         if (!force) {
           // already installed
@@ -457,8 +469,8 @@ export class ExtensionManager {
 
         // force removal first
         try {
-
-          await asyncIO.rmdir(extension.location);
+          progress.NotifyMessage(`Removing existing extension ${extension.location}`);
+          await rmdir(extension.location);
         }
         catch (e) {
           // no worries.
@@ -466,16 +478,19 @@ export class ExtensionManager {
       }
 
       // create the folder
-      await asyncIO.mkdir(extension.location);
+      progress.NotifyMessage(`Creating target folder: ${extension.location}`);
+      await mkdir(extension.location);
 
       // acquire the write lock if we don't have it already
-      release = release || await asyncIO.Lock.waitForExclusive(extension.location);
+      release = release || await Lock.waitForExclusive(extension.location);
 
       if (release) {
         // run NPM INSTALL for the package.
         progress.NotifyMessage(`Running  npm install for ${pkg.name}, ${pkg.version}`);
 
-        const results = await npmInstall(pkg.name, pkg.version, extension.source, force || false);
+        const results = npmInstall(pkg.name, pkg.version, extension.source, force || false);
+        ExtensionManager.criticalSection.exit();
+        await results;
         progress.NotifyMessage(`npm install completed ${pkg.name}, ${pkg.version}`);
       } else {
         throw new Exception("NO LOCK.")
@@ -483,8 +498,9 @@ export class ExtensionManager {
       return extension;
     } catch (e) {
       // clean up the attempted install directory
-      if (await asyncIO.isDirectory(extension.location)) {
-        await asyncIO.rmdir(extension.location);
+      if (await isDirectory(extension.location)) {
+        progress.NotifyMessage(`Cleanin up failed installation: ${extension.location}`);
+        await rmdir(extension.location);
       }
 
       if (e instanceof Exception) {
@@ -507,18 +523,18 @@ export class ExtensionManager {
   }
 
   public async removeExtension(extension: Extension): Promise<void> {
-    if (await asyncIO.isDirectory(extension.location)) {
-      const release = await asyncIO.Lock.waitForExclusive(extension.location);
+    if (await isDirectory(extension.location)) {
+      const release = await Lock.waitForExclusive(extension.location);
       if (release) {
-        await asyncIO.rmdir(extension.location);
+        await rmdir(extension.location);
         await release();
       } else {
-        throw new Exception("I has a sad.");
+        throw new Exception(`Unable to remove extension from '${extension.location}' .`);
       }
     }
   }
 
-  public async start(extension: Extension): Promise<childProcess.ChildProcess> {
+  public async start(extension: Extension): Promise<ChildProcess> {
     // look at the extension for the 
     if (!extension.definition.scripts || !extension.definition.scripts.start) {
       throw new MissingStartCommandException(extension);
@@ -534,12 +550,17 @@ export class ExtensionManager {
     env[getPathVariableName()] = `${path.join(extension.modulePath, "node_modules", ".bin")}${path.delimiter}${env[getPathVariableName()]}`;
     env[getPathVariableName()] = `${path.join(extension.location, "node_modules", ".bin")}${path.delimiter}${env[getPathVariableName()]}`;
 
-    if (command[0] == 'node') {
-      // nodejs or electron. 
-      return childProcess.spawn(process.execPath, command.slice(1), { env: env, cwd: extension.modulePath })
+    if (command[0] == 'node' || command[0] == "node.exe") {
+      command[0] = nodePath;
     }
-    // spawn the command 
-    return childProcess.spawn(command[0], command.slice(1), { env: env, cwd: extension.modulePath });
+
+    // ensure parameters requiring quotes have them. 
+    for (let i = 0; i < command.length; i++) {
+      command[i] = quoteIfNecessary(command[i]);
+    }
+
+    // spawn the command via the shell (since that how npm would have done it anyway.)
+    return spawn(command[0], command.slice(1), { env: env, cwd: extension.modulePath, shell: true });
   }
 }
 

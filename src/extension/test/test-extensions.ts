@@ -20,8 +20,14 @@ import { ExtensionManager, UnresolvedPackageException, InvalidPackageIdentityExc
   }
 
   async after() {
-    await this.extensionManager.dispose();
-    await asyncio.rmdir(this.tmpFolder);
+    try {
+      await this.extensionManager.dispose();
+      await asyncio.rmdir(this.tmpFolder);
+    } catch (e) {
+      console.error("ABORTING\n");
+      console.error(e);
+      throw "ABORTED";
+    }
   }
 
   @test async "Test Reset"() {
@@ -38,6 +44,7 @@ import { ExtensionManager, UnresolvedPackageException, InvalidPackageIdentityExc
     }
 
     {
+
       console.log("Attempt Overwrite")
       // install/overwrite
       const dni = await this.extensionManager.findPackage("echo-cli", "*");
@@ -62,16 +69,17 @@ import { ExtensionManager, UnresolvedPackageException, InvalidPackageIdentityExc
       }
 
       assert.equal(done, true, "Package is not installed");
-      await polyfill.Delay(5000);
+      //await polyfill.Delay(5000);
     }
   }
 
-
-  @test async "FindPackage- in github"() {
-    // github repo style
-    const npmpkg = await this.extensionManager.findPackage("npm", "npm/npm");
-    assert.equal(npmpkg.name, "npm");
-  }
+  /*
+    @test async "FindPackage- in github"() {
+      // github repo style
+      const npmpkg = await this.extensionManager.findPackage("npm", "npm/npm");
+      assert.equal(npmpkg.name, "npm");
+    }
+  */
 
   @test async "FindPackage- in npm"() {
     const p = await this.extensionManager.findPackage("autorest");

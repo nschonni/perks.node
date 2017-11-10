@@ -21,6 +21,7 @@ export class UnableToReadLockException extends Exception {
 
 export interface UnlockOptions {
   realpath?: boolean;
+  delay?: number;
 }
 
 export interface CheckOptions extends UnlockOptions {
@@ -63,6 +64,8 @@ export class Lock {
     // first try to create the file
     // it's ok if it fails
     options = options || {};
+    options.delay = options.delay || 2000;
+    options.retries = options.retries || 4;
 
     const p = `${path}.lock`;
 
@@ -87,7 +90,7 @@ export class Lock {
     } catch (e) {
     }
     if (options.retries) {
-      await Delay(1000);
+      await Delay(options.delay);
       options.retries--;
       return await this.read(p, options);
     }
